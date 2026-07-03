@@ -12,6 +12,7 @@ in `results/`, `docs/validation/VALIDATION_MEMO.md`, and `paper/`.
 - Method and format specs are organized under `docs/specs/`.
 - Validation notes live under `docs/validation/`.
 - Measured benchmark and runtime artifacts live under `results/`.
+- Quality-first benchmark helpers live in `benchmarks/benchmark_quality.py`.
 - Paper and Substack drafts live under `paper/`.
 - Historical notebook repair/extraction material is preserved under
   `artifacts/` and `scripts/notebook-maintenance/`.
@@ -63,6 +64,8 @@ fabq-rc/
 - `results/runtime_validation_report.md` and
   `results/fabq_runtime_validation_report.md` - runtime validation reports.
 - `paper/FABQ_RC_preprint.md` - conservative technical-report draft.
+- `paper/FABQ_RC_project_story.md` - narrative research history with failures,
+  pivots, and current evidence framing.
 - `paper/substack/README.md` - three-post reader-facing publication series.
 - `notebooks/archive/Main-FABQ-RC-Notebook.ipynb` - archived main notebook.
 - `notebooks/archive/FABQ-RC-Dense-27B-Notebook.ipynb` - archived dense 27B
@@ -74,7 +77,7 @@ fabq-rc/
 Before presenting FABQ-RC as a release-ready result, check:
 
 1. Storage accounting against `docs/validation/VALIDATION_MEMO.md`.
-2. Perplexity and runtime numbers in `results/`.
+2. Quality/task-accuracy benchmarks first; use perplexity only as a diagnostic.
 3. Whether the padded-centroid issue in `plans/RESEARCH-PLAN.md` is verified.
 4. Whether the GGUF spec being referenced is the intended canonical version.
 

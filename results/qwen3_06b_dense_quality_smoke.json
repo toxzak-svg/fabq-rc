@@ -1,0 +1,86 @@
+{
+  "repo_id": "results\\qwen3_06b_bin_checkpoint",
+  "benchmark_kind": "quality_task_accuracy",
+  "environment": {
+    "python": "3.14.4",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "torch": "2.11.0+cpu",
+    "cuda_available": false,
+    "torch_threads": 8
+  },
+  "quality": {
+    "primary_metric": "task_accuracy",
+    "perplexity_role": "diagnostic_only",
+    "total": 3,
+    "correct": 2,
+    "accuracy": 0.6666666666666666
+  },
+  "quality_gate": {
+    "pass": true,
+    "accuracy_drop": null,
+    "reason": "no baseline supplied; recorded candidate quality only"
+  },
+  "tasks": [
+    {
+      "id": "arithmetic_2_plus_2",
+      "answer": "B",
+      "prediction": "A",
+      "correct": false,
+      "choice_scores": {
+        "A": {
+          "loss": 0.788153886795044,
+          "tokens": 1
+        },
+        "B": {
+          "loss": 1.913153886795044,
+          "tokens": 1
+        },
+        "C": {
+          "loss": 2.913153886795044,
+          "tokens": 1
+        }
+      }
+    },
+    {
+      "id": "capital_france",
+      "answer": "C",
+      "prediction": "C",
+      "correct": true,
+      "choice_scores": {
+        "A": {
+          "loss": 6.965950965881348,
+          "tokens": 1
+        },
+        "B": {
+          "loss": 6.153450965881348,
+          "tokens": 1
+        },
+        "C": {
+          "loss": 0.02845078706741333,
+          "tokens": 1
+        }
+      }
+    },
+    {
+      "id": "opposite_hot",
+      "answer": "A",
+      "prediction": "A",
+      "correct": true,
+      "choice_scores": {
+        "A": {
+          "loss": 0.12090303748846054,
+          "tokens": 1
+        },
+        "B": {
+          "loss": 6.120903015136719,
+          "tokens": 1
+        },
+        "C": {
+          "loss": 4.620903015136719,
+          "tokens": 1
+        }
+      }
+    }
+  ],
+  "elapsed_sec": 21.98436809994746
+}

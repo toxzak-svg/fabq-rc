@@ -32,6 +32,7 @@ This plan covers two complementary research directions building on FABQ-RC:
 - Near-binary FABQ-RC-lite improves reconstruction but fails language-model quality.
 - The strongest current path is dense-dequantized unified FABQ-VP/EBQ around 4.5 physical bpw.
 - A 1024-token Qwen3-0.6B baseline now exists in `results/qwen3_06b_baseline_1024_report.md`.
+- Going forward, quality/task accuracy is the primary evaluation gate. Perplexity remains useful as a diagnostic, but it should not be the main success criterion by itself.
 
 ---
 
@@ -52,16 +53,20 @@ This plan covers two complementary research directions building on FABQ-RC:
 - Full FABQ-RC residual-codebook evaluation with the fixed builder still needs to run before claiming the original FABQ-RC path is validated.
 - Target for the full run: all layers > 0.98 cosine similarity, plus end-to-end perplexity on the same corpus as the dense baseline.
 
-### 0.2 Baseline Perplexity Measurement
+### 0.2 Baseline Quality Measurement
 
 **Before extending, measure:**
-1. FABQ-RC (fixed) perplexity on WikiText2
-2. Compare against Q1_0_g128 at same bpw
-3. Compare against BiLLM at similar bpw
+1. Dense baseline quality/task accuracy on a fixed small benchmark suite
+2. FABQ-RC (fixed) quality/task accuracy on the same prompts
+3. Compare against Q1_0_g128 at same bpw
+4. Compare against BiLLM or another credible low-bit baseline at similar bpw
+5. Keep perplexity as a secondary diagnostic for regression triage
 
-**Deliverable:** Validated baseline numbers for FABQ-RC v2
+**Deliverable:** Validated quality-first baseline numbers for FABQ-RC v2
 
-**Status 2026-06-28:** Partial baseline established for Qwen3-0.6B. Dense BF16 PPL is 50.7062 over 1016 scored WikiText-2 tokens. Unified FABQ-VP/EBQ at estimated 4.5255 bpw reaches 59.5981 PPL on the same slice. See `results/qwen3_06b_baseline_1024_report.md`.
+**Status 2026-06-28:** Partial PPL baseline established for Qwen3-0.6B. Dense BF16 PPL is 50.7062 over 1016 scored WikiText-2 tokens. Unified FABQ-VP/EBQ at estimated 4.5255 bpw reaches 59.5981 PPL on the same slice. See `results/qwen3_06b_baseline_1024_report.md`.
+
+**Status 2026-07-02:** Quality-first helper added at `benchmarks/benchmark_quality.py`. The next validation run should record task accuracy for dense and quantized variants before treating PPL as decisive.
 
 ---
 
@@ -314,9 +319,10 @@ class FABQEBQContainer:
 
 ### 4.3 Evaluation
 
-**Perplexity benchmarks:**
-- WikiText2 test set
-- C4 (if time)
+**Quality benchmarks:**
+- Fixed multiple-choice/cloze prompt suite with dense-vs-quantized task accuracy
+- Generation sanity checks on fixed prompts
+- WikiText2/C4 perplexity only as diagnostic regressions, not primary wins
 
 **Downstream tasks:**
 - ARC-Easy/Challenge
@@ -332,7 +338,8 @@ class FABQEBQContainer:
 | Metric | Target |
 |--------|--------|
 | Bits per parameter | ~3 bpw |
-| WikiText2 PPL | Within 5% of FP16 |
+| Quality/task accuracy | Within 5% absolute accuracy drop vs dense baseline |
+| WikiText2/C4 PPL | Diagnostic only |
 | RAM usage | < 20 GB total |
 | VRAM usage | 0 GB (CPU-only target) |
 
@@ -355,7 +362,8 @@ class FABQEBQContainer:
 ### Phase 0: Validation (Blocking)
 - [x] Fix padded-block centroid bug in FABQ-RC codebook sampling
 - [ ] Run FABQ-RC evaluation with fix
-- [x] Confirm local Qwen3-0.6B dense and 4.5 bpw FABQ-VP perplexity numbers
+- [x] Confirm local Qwen3-0.6B dense and 4.5 bpw FABQ-VP perplexity diagnostics
+- [ ] Run dense-vs-quantized quality/task-accuracy benchmark
 
 ### Phase 1: FABQ-VP Prototype  
 - [ ] Implement 5-level precision pyramid

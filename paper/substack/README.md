@@ -1,6 +1,7 @@
 # FABQ-RC Substack Series
 
-This folder contains a three-part Substack adaptation of the FABQ-RC preprint.
+This folder contains a four-part Substack adaptation of the FABQ-RC preprint
+and research history.
 The posts are written to be published independently, while still forming a
 single narrative arc.
 
@@ -39,11 +40,23 @@ and native compressed inference.
 **Best audience:** Researchers, collaborators, and people deciding whether the
 project is ready to cite, reproduce, or build on.
 
+### 4. The Research Story Behind FABQ-RC
+
+**File:** `04-the-research-story-behind-fabq-rc.md`
+
+**Angle:** A polished, Substack-ready narrative of the project arc: initial
+hypothesis, evidence failures, storage audit, algorithmic bug, FABQ-RC-lite
+collapse, variable-precision pivot, and the new quality-per-byte framing.
+Includes uploadable PNG graphics under `assets/`.
+
+**Best audience:** Technical readers who want the full candid research story
+without reading the paper draft.
+
 ## Recommended Publication Order
 
 Publish one post at a time. The first post works as the public introduction,
-the second builds trust by showing the failure modes, and the third invites
-serious follow-up work.
+the second builds trust by showing the failure modes, the third invites serious
+follow-up work, and the fourth can stand alone as the polished retrospective.
 
 ## Tone Notes
 
@@ -52,3 +65,5 @@ serious follow-up work.
 - Lead with measured evidence where possible.
 - Treat the current project as an active research prototype, not a finished
   production quantizer.
+- For Substack, upload PNG graphics from `assets/` instead of relying on Mermaid
+  or raw LaTeX rendering.
