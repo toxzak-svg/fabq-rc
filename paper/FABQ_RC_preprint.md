@@ -139,7 +139,7 @@ Most local runs used:
 - 256 evaluation tokens, two 128-token chunks
 - deterministic generation with 24 new tokens
 
-The Qwen3.5-2B unified run was produced in a separate environment with Python 3.12.13, PyTorch 2.11.0+cu128, CUDA available, and an inline fallback corpus because the dataset load failed in offline mode. Its perplexity is therefore not directly comparable to the WikiText-2 runs.
+An earlier Qwen3.5-2B unified run was produced in a separate environment with Python 3.12.13, PyTorch 2.11.0+cu128, CUDA available, and an inline fallback corpus because the dataset load failed in offline mode. The harness now checks the local Hugging Face cache before accepting that inline fallback, but the checked-in 2B result has not yet been rerun on the WikiText-2 slice. Its perplexity is therefore excluded from the comparable results below.
 
 All runtime experiments dequantize weights back into dense tensors before forward evaluation. They validate quantization quality and functional execution, but they do not measure native compressed-kernel speedups.
 
@@ -192,13 +192,9 @@ The simplified binary/int4 variant is mechanically valid: models load, quantized
 
 The variable-precision prototype strongly outperforms FABQ-RC-lite at comparable evaluation settings. At estimated 4.5255 bpw, the small-slice perplexity gap to dense is 7.2863 absolute points, or approximately 20.7% relative to the dense baseline. At estimated 4.1432 bpw, the gap is still substantial. At estimated 3.1151 bpw, quality remains poor.
 
-### 5.5 Unified Prototype on Qwen3.5-2B
+### 5.5 Omitted Qwen3.5-2B Smoke Result
 
-| Model | Target bpw | Estimated bpw | Dataset | MSE | SQNR dB | PPL | Prompt tok/s | Decode tok/s |
-|---|---:|---:|---|---:|---:|---:|---:|---:|
-| Qwen3.5-2B local checkpoint | 3.0 | 3.1089 | inline fallback | 1.807460e-05 | 9.3759 | 188.5031 | 10.73 | 5.85 |
-
-This run confirms that the prototype scales to a larger checkpoint and validates forward/generation behavior. Because it used an inline fallback corpus rather than WikiText-2, its perplexity should be treated as a functional smoke result only.
+The checked-in Qwen3.5-2B unified result (`results/qwen3_5_2b_unified_fabq_benchmark.json`) is a functional smoke result, not a comparable language-modeling result. It used the `inline_fallback` corpus rather than `wikitext/wikitext-2-raw-v1/test`, so its perplexity row is intentionally omitted from the paper table until rerun on the same WikiText-2 slice used for the smaller models. The smoke still shows that the prototype loaded, quantized 284 target layers, completed forward and generation checks, and reported estimated 3.1089 bpw with 9.3759 dB SQNR.
 
 ### 5.6 Storage Budget Audit
 
@@ -230,7 +226,7 @@ The current experiments have several major limitations.
 3. Perplexity uses very small 256-token slices and should be treated as smoke validation.
 4. Throughput results are for dense-dequantized CPU execution and do not demonstrate compressed-kernel acceleration.
 5. The final 27B GGUF claim is not validated by checked-in perplexity logs.
-6. The Qwen3.5-2B run used an inline fallback corpus and is not directly comparable to WikiText-2.
+6. The checked-in Qwen3.5-2B run used an inline fallback corpus and is intentionally omitted from the comparable WikiText-2 result rows.
 7. Existing GGUF specifications in the repository need consolidation before external compatibility claims.
 
 ## 8. Reproducibility Artifacts
@@ -249,7 +245,7 @@ Relevant repository files:
 | `results/fabq_runtime_validation_report.md` | Simplified FABQ runtime report |
 | `results/runtime_validation_report.md` | Dense baseline runtime report |
 | `results/qwen3_06b_unified_fabq*_benchmark.json` | Unified Qwen3-0.6B result files |
-| `results/qwen3_5_2b_unified_fabq_benchmark.json` | Unified Qwen3.5-2B result file |
+| `results/qwen3_5_2b_unified_fabq_benchmark.json` | Unified Qwen3.5-2B functional smoke result; omitted from comparable PPL tables until rerun on WikiText-2 |
 
 ## 9. Future Work
 

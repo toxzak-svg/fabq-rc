@@ -56,6 +56,105 @@ def aggregate_loss(loss_token_pairs: Iterable[tuple[float, int]]) -> dict:
     }
 
 
+def _dataset_cache_name(dataset_name: str) -> str:
+    return "datasets--" + dataset_name.replace("/", "--")
+
+
+def _hf_cache_roots() -> list[Path]:
+    roots = []
+    for value in (os.environ.get("HF_HOME"), os.environ.get("HF_DATASETS_CACHE")):
+        if value:
+            roots.append(Path(value))
+    roots.append(Path.cwd() / ".hf_cache")
+    unique = []
+    seen = set()
+    for root in roots:
+        resolved = root.resolve()
+        if resolved in seen:
+            continue
+        unique.append(root)
+        seen.add(resolved)
+    return unique
+
+
+def _cached_dataset_files(dataset_name: str, dataset_config: str, split: str) -> list[Path]:
+    files: list[Path] = []
+    cache_name = _dataset_cache_name(dataset_name)
+    split_prefix = f"{split}-"
+    for root in _hf_cache_roots():
+        snapshot_root = root / "hub" / cache_name / "snapshots"
+        if snapshot_root.exists():
+            for config_dir in snapshot_root.glob(f"*/{dataset_config}"):
+                for suffix in ("*.jsonl", "*.json", "*.parquet"):
+                    files.extend(sorted(config_dir.glob(f"{split_prefix}{suffix}")))
+
+        dataset_root = root / "datasets"
+        if dataset_root.exists():
+            for arrow in sorted(dataset_root.glob(f"{dataset_name}/{dataset_config}/**/{dataset_name}-{split}.arrow")):
+                files.append(arrow)
+            for arrow in sorted(dataset_root.glob(f"{dataset_name}/{dataset_config}/**/{split}.arrow")):
+                files.append(arrow)
+    return files
+
+
+def _texts_from_json_lines(path: Path) -> Iterable[str]:
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            yield row.get("text") or ""
+
+
+def _texts_from_parquet(path: Path) -> Iterable[str]:
+    import pyarrow.parquet as pq
+
+    table = pq.read_table(path, columns=["text"])
+    for value in table.column("text").to_pylist():
+        yield value or ""
+
+
+def _texts_from_arrow(path: Path) -> Iterable[str]:
+    from datasets import Dataset
+
+    dataset = Dataset.from_file(str(path))
+    for row in dataset:
+        yield row.get("text") or ""
+
+
+def _load_eval_text_from_local_cache(
+    max_chars: int,
+    dataset_name: str,
+    dataset_config: str,
+    split: str,
+) -> tuple[str, str] | None:
+    pieces: list[str] = []
+    total = 0
+    for path in _cached_dataset_files(dataset_name, dataset_config, split):
+        try:
+            if path.suffix == ".parquet":
+                texts = _texts_from_parquet(path)
+            elif path.suffix == ".arrow":
+                texts = _texts_from_arrow(path)
+            else:
+                texts = _texts_from_json_lines(path)
+            for raw_text in texts:
+                text = raw_text.strip()
+                if not text:
+                    continue
+                pieces.append(text)
+                total += len(text) + 2
+                if total >= max_chars:
+                    return "\n\n".join(pieces)[:max_chars], f"{dataset_name}/{dataset_config}/{split}"
+        except Exception as exc:
+            print(f"[warn] cached dataset shard failed, skipping {path}: {type(exc).__name__}: {exc}")
+            continue
+    if pieces:
+        return "\n\n".join(pieces)[:max_chars], f"{dataset_name}/{dataset_config}/{split}"
+    return None
+
+
 def load_eval_text(max_chars: int, dataset_name: str, dataset_config: str, split: str) -> tuple[str, str]:
     try:
         from datasets import load_dataset
@@ -74,7 +173,13 @@ def load_eval_text(max_chars: int, dataset_name: str, dataset_config: str, split
         if pieces:
             return "\n\n".join(pieces)[:max_chars], f"{dataset_name}/{dataset_config}/{split}"
     except Exception as exc:
-        print(f"[warn] dataset load failed, using inline corpus: {type(exc).__name__}: {exc}")
+        print(f"[warn] dataset load failed, checking local cache: {type(exc).__name__}: {exc}")
+
+    cached = _load_eval_text_from_local_cache(max_chars, dataset_name, dataset_config, split)
+    if cached is not None:
+        return cached
+
+    print("[warn] local dataset cache unavailable, using inline corpus")
 
     fallback = (
         "Language models compress patterns in text by predicting the next token. "
