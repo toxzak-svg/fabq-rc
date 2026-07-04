@@ -2,9 +2,11 @@ metadata:
   license: apache-2.0
   tags:
     - quantization
-    - 1-bit
+    - low-bit
+    - post-training-quantization
     - fabq-rc
-    - fisher-adaptive
+    - negative-results
+    - qwen
     - research
     - code
   pipeline_tag: other

@@ -17,9 +17,29 @@ in `results/`, `docs/validation/VALIDATION_MEMO.md`, and `paper/`.
 - Historical notebook repair/extraction material is preserved under
   `artifacts/` and `scripts/notebook-maintenance/`.
 
-Key caveat: older `~1.18 bpw` and final `27B` claims are not fully validated.
-Use the validation memo and result files as the source of truth before making
-publication or model-card claims.
+Key caveat: the checked-in evidence does not support a validated 1-bit model,
+a BiLLM-quality comparison win, or a validated 27B GGUF quality claim. Use the
+validation memo, the preprint, and the result files as the source of truth
+before making publication or model-card claims.
+
+## Reproducible Evidence Snapshot
+
+The current public-facing claim should be the measured negative-result framing
+from `paper/FABQ_RC_preprint.md` and the June 26, 2026 benchmark JSONs:
+
+| Artifact | Setting | Evidence | Readout |
+|---|---|---:|---|
+| `results/qwen35_08b_weight_quant.md` | Qwen3.5-0.8B weight reconstruction | FABQ-RC-lite MSE `6.615134e-05` at `1.4010` bpw | Better reconstruction than fixed Q1 blocks, but not a language-quality result |
+| `results/fabq_runtime_validation_report.md` | Qwen3-0.6B FABQ-RC-lite dequantized runtime | PPL `3,676,448.8825` at `1.4004` bpw vs dense PPL `35.2165` | Near-binary row-energy allocation fails language quality |
+| `results/qwen3_06b_unified_fabq_benchmark.json` | Qwen3-0.6B unified VP/EBQ target 3.0 bpw | PPL `3269.7708` at estimated `3.1151` bpw | Still a quality failure |
+| `results/qwen3_06b_unified_fabq_bpw4_benchmark.json` | Qwen3-0.6B unified VP/EBQ target 4.0 bpw | PPL `67.4850` at estimated `4.1432` bpw | Improved but still materially behind dense |
+| `results/qwen3_06b_unified_fabq_bpw45_benchmark.json` | Qwen3-0.6B unified VP/EBQ target 4.5 bpw | PPL `42.5027` at estimated `4.5255` bpw | Best current local quality smoke, not a 1-bit result |
+
+All runtime measurements above are dense-dequantized validation runs over a
+small WikiText-2 slice. They prove that the harness can load, quantize,
+dequantize, run forward passes, and generate short samples. They do not prove
+native compressed-kernel speedups, leaderboard-quality perplexity, or task
+accuracy.
 
 ## Repository Layout
 
@@ -69,7 +89,7 @@ fabq-rc/
 - `paper/substack/README.md` - three-post reader-facing publication series.
 - `notebooks/archive/Main-FABQ-RC-Notebook.ipynb` - archived main notebook.
 - `notebooks/archive/FABQ-RC-Dense-27B-Notebook.ipynb` - archived dense 27B
-  experiment notebook.
+  experiment notebook; not evidence of a validated 27B FABQ-RC release.
 - `scripts/publishing/push_to_hf.py` - curated Hugging Face staging helper.
 
 ## Validation Guidance
@@ -78,7 +98,8 @@ Before presenting FABQ-RC as a release-ready result, check:
 
 1. Storage accounting against `docs/validation/VALIDATION_MEMO.md`.
 2. Quality/task-accuracy benchmarks first; use perplexity only as a diagnostic.
-3. Whether the padded-centroid issue in `plans/RESEARCH-PLAN.md` is verified.
+3. Whether the full Fisher calibration and residual-codebook path has been
+   benchmarked, not only row-energy or forward-imatrix proxies.
 4. Whether the GGUF spec being referenced is the intended canonical version.
 
 The project has useful negative and prototype results, but the README and

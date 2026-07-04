@@ -13,6 +13,7 @@ It is not a native compressed-kernel throughput benchmark.
 from __future__ import annotations
 
 import argparse
+import heapq
 import json
 import math
 import os
@@ -25,6 +26,14 @@ import psutil
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from benchmark_fabq_runtime import ascii_preview, is_target_linear_name  # noqa: E402
+from benchmark_quality import (  # noqa: E402
+    aggregate_quality,
+    format_quality_report,
+    load_baseline_summary,
+    load_quality_tasks,
+    quality_gate,
+    score_multiple_choice_task,
+)
 from benchmark_qwen35_runtime import (  # noqa: E402
     DEFAULT_PROMPT,
     auto_model_kind,
@@ -36,6 +45,24 @@ from benchmark_qwen35_runtime import (  # noqa: E402
 
 
 BIT_WIDTHS = {"int8": 8, "int4": 4, "int2": 2, "binary": 1}
+PRECISION_ORDER = ("binary", "int2", "int4", "int8")
+PRECISION_RANK = {name: rank for rank, name in enumerate(PRECISION_ORDER)}
+PRECISION_ERROR_WEIGHT = {"binary": 1.0, "int2": 0.45, "int4": 0.12, "int8": 0.02}
+INT8_FLOOR_PATTERNS = (
+    ".linear_attn.in_proj_a",
+    ".linear_attn.in_proj_b",
+)
+INT2_FLOOR_PATTERNS = (
+    ".self_attn.q_proj",
+    ".self_attn.k_proj",
+    ".self_attn.v_proj",
+    ".self_attn.o_proj",
+    ".linear_attn.out_proj",
+    ".linear_attn.in_proj_qkv",
+    ".linear_attn.in_proj_z",
+    ".mlp.gate_proj",
+    ".mlp.up_proj",
+)
 
 
 def rss_gb() -> float:
@@ -88,6 +115,85 @@ def estimate_mix_bpw(mix: dict[str, float]) -> float:
     return sum(BIT_WIDTHS[name] * frac for name, frac in mix.items())
 
 
+def precision_floor_for_layer(name: str) -> str:
+    """Return the minimum precision allowed for fragile module types."""
+    if any(pattern in name for pattern in INT8_FLOOR_PATTERNS):
+        return "int8"
+    if any(pattern in name for pattern in INT2_FLOOR_PATTERNS):
+        return "int2"
+    return "binary"
+
+
+def _next_precision(precision: str) -> str | None:
+    rank = PRECISION_RANK[precision] + 1
+    if rank >= len(PRECISION_ORDER):
+        return None
+    return PRECISION_ORDER[rank]
+
+
+def _previous_precision(precision: str) -> str | None:
+    rank = PRECISION_RANK[precision] - 1
+    if rank < 0:
+        return None
+    return PRECISION_ORDER[rank]
+
+
+def _max_precision(left: str, right: str) -> str:
+    return left if PRECISION_RANK[left] >= PRECISION_RANK[right] else right
+
+
+def _precision_storage_bits_for_row(in_features: int, precision: str, blocksize: int) -> int:
+    width = BIT_WIDTHS[precision]
+    n_blocks = math.ceil(in_features / blocksize)
+    bits = in_features * width
+    scale_blocks = n_blocks if width <= 4 else 1
+    bits += scale_blocks * 16
+    if width <= 2:
+        bits += n_blocks * 16
+    return bits
+
+
+def _allocation_storage_bits(in_features: int, allocation: list[str], blocksize: int) -> int:
+    bits = len(allocation) * 16
+    for precision in allocation:
+        bits += _precision_storage_bits_for_row(in_features, precision, blocksize)
+    return bits
+
+
+def _precision_counts_from_mix(n_rows: int, mix: dict[str, float]) -> dict[str, int]:
+    counts = {name: int(round(mix.get(name, 0.0) * n_rows)) for name in BIT_WIDTHS}
+    delta = n_rows - sum(counts.values())
+    counts["binary"] = max(0, counts.get("binary", 0) + delta)
+    excess = sum(counts.values()) - n_rows
+    for name in ("binary", "int2", "int4", "int8"):
+        if excess <= 0:
+            break
+        take = min(counts.get(name, 0), excess)
+        counts[name] -= take
+        excess -= take
+    return counts
+
+
+def minimum_precision_for_mix(mix: dict[str, float]) -> str:
+    for precision in PRECISION_ORDER:
+        if mix.get(precision, 0.0) > 0.0:
+            return precision
+    return "int8"
+
+
+def _allocate_precision_by_damage_scores(row_damage: list[float], mix: dict[str, float]) -> list[str]:
+    n_rows = len(row_damage)
+    counts = _precision_counts_from_mix(n_rows, mix)
+    order = sorted(range(n_rows), key=lambda idx: row_damage[idx], reverse=True)
+    allocation = ["binary"] * n_rows
+    cursor = 0
+    for name in ("int8", "int4", "int2", "binary"):
+        for row in order[cursor : cursor + counts.get(name, 0)]:
+            allocation[row] = name
+        cursor += counts.get(name, 0)
+    return allocation
+
+
 def _normalized_importance(input_importance):
     import torch
 
@@ -108,6 +214,17 @@ def weighted_mse(weight, recon, input_importance) -> float:
     imp = imp[: weight.shape[1]]
     diff = (weight.to(torch.float32) - recon.to(torch.float32)) ** 2
     return float((diff * imp.view(1, -1)).mean().detach().cpu())
+
+
+def row_damage_scores(weight, input_importance) -> list[float]:
+    import torch
+
+    w = weight.detach().to(torch.float32).cpu()
+    imp = _normalized_importance(input_importance)
+    if imp.numel() < w.shape[1]:
+        imp = torch.cat([imp, imp.new_ones(w.shape[1] - imp.numel())])
+    imp = imp[: w.shape[1]]
+    return (w * w * imp.view(1, -1)).mean(dim=1).tolist()
 
 
 def quantize_symmetric(weight, bits: int, input_importance=None, blocksize: int = 128):
@@ -155,42 +272,178 @@ def apply_block_residual_correction(weight, recon, blocksize: int = 128):
 
 
 def allocate_precision_by_damage(weight, input_importance, mix: dict[str, float]) -> list[str]:
-    import torch
+    return _allocate_precision_by_damage_scores(row_damage_scores(weight, input_importance), mix)
 
-    w = weight.detach().to(torch.float32).cpu()
-    imp = _normalized_importance(input_importance)
-    if imp.numel() < w.shape[1]:
-        imp = torch.cat([imp, imp.new_ones(w.shape[1] - imp.numel())])
-    imp = imp[: w.shape[1]]
-    damage = (w * w * imp.view(1, -1)).mean(dim=1)
-    order = torch.argsort(damage, descending=True).tolist()
-    n_rows = w.shape[0]
-    counts = {name: int(round(frac * n_rows)) for name, frac in mix.items()}
-    delta = n_rows - sum(counts.values())
-    counts["binary"] = max(0, counts.get("binary", 0) + delta)
 
-    allocation = ["binary"] * n_rows
-    cursor = 0
-    for name in ("int8", "int4", "int2", "binary"):
-        for row in order[cursor : cursor + counts.get(name, 0)]:
-            allocation[row] = name
-        cursor += counts.get(name, 0)
-    return allocation
+def build_global_precision_plan(layers: list[dict], target_bpw: float, blocksize: int) -> dict:
+    """Allocate precision globally while staying within the legacy fixed-mix budget."""
+    mix = precision_mix_for_target(target_bpw)
+    normalized = []
+    legacy_budget_bits = 0
+    storage_bits = 0
+    total_weights = 0
+    precision_hist = {name: 0 for name in BIT_WIDTHS}
+    heap = []
+    tie_breaker = 0
+    floor_relaxed_rows = 0
+    target_floor = minimum_precision_for_mix(mix)
+
+    for layer_idx, layer in enumerate(layers):
+        name = layer["name"]
+        weight = layer.get("weight")
+        if weight is not None:
+            out_features = int(weight.shape[0])
+            in_features = int(weight.shape[1])
+            importance = layer.get("importance")
+            if importance is None:
+                import torch
+
+                importance = torch.ones(in_features, dtype=torch.float32)
+            damage = row_damage_scores(weight, importance)
+        else:
+            out_features = int(layer["out_features"])
+            in_features = int(layer["in_features"])
+            damage = [float(value) for value in layer["row_damage"]]
+
+        if len(damage) != out_features:
+            raise ValueError(f"row_damage length mismatch for {name}")
+
+        legacy_allocation = _allocate_precision_by_damage_scores(damage, mix)
+        floor = _max_precision(precision_floor_for_layer(name), target_floor)
+        allocation = [floor] * out_features
+        layer_bits = _allocation_storage_bits(in_features, allocation, blocksize)
+        legacy_bits = _allocation_storage_bits(in_features, legacy_allocation, blocksize)
+        storage_bits += layer_bits
+        legacy_budget_bits += legacy_bits
+        total_weights += out_features * in_features
+        normalized.append(
+            {
+                "name": name,
+                "out_features": out_features,
+                "in_features": in_features,
+                "damage": damage,
+                "allocation": allocation,
+            }
+        )
+
+        for row_idx, precision in enumerate(allocation):
+            precision_hist[precision] += 1
+    relax_heap = []
+    for layer_idx, layer in enumerate(normalized):
+        for row_idx, precision in enumerate(layer["allocation"]):
+            previous_precision = _previous_precision(precision)
+            if previous_precision is None or PRECISION_RANK[previous_precision] < PRECISION_RANK[target_floor]:
+                continue
+            current_bits = _precision_storage_bits_for_row(layer["in_features"], precision, blocksize)
+            previous_bits = _precision_storage_bits_for_row(layer["in_features"], previous_precision, blocksize)
+            saved_bits = current_bits - previous_bits
+            if saved_bits <= 0:
+                continue
+            damage_cost = max(0.0, layer["damage"][row_idx]) * (
+                PRECISION_ERROR_WEIGHT[previous_precision] - PRECISION_ERROR_WEIGHT[precision]
+            )
+            efficiency_cost = damage_cost / max(saved_bits, 1)
+            heapq.heappush(
+                relax_heap,
+                (efficiency_cost, damage_cost, tie_breaker, layer_idx, row_idx, previous_precision, saved_bits),
+            )
+            tie_breaker += 1
+
+    while storage_bits > legacy_budget_bits and relax_heap:
+        _, _, _, layer_idx, row_idx, previous_precision, saved_bits = heapq.heappop(relax_heap)
+        layer = normalized[layer_idx]
+        current_precision = layer["allocation"][row_idx]
+        if _previous_precision(current_precision) != previous_precision:
+            continue
+
+        layer["allocation"][row_idx] = previous_precision
+        precision_hist[current_precision] -= 1
+        precision_hist[previous_precision] += 1
+        storage_bits -= saved_bits
+        floor_relaxed_rows += 1
+
+        next_previous = _previous_precision(previous_precision)
+        if next_previous is None or PRECISION_RANK[next_previous] < PRECISION_RANK[target_floor]:
+            continue
+        current_bits = _precision_storage_bits_for_row(layer["in_features"], previous_precision, blocksize)
+        previous_bits = _precision_storage_bits_for_row(layer["in_features"], next_previous, blocksize)
+        next_saved_bits = current_bits - previous_bits
+        if next_saved_bits <= 0:
+            continue
+        damage_cost = max(0.0, layer["damage"][row_idx]) * (
+            PRECISION_ERROR_WEIGHT[next_previous] - PRECISION_ERROR_WEIGHT[previous_precision]
+        )
+        efficiency_cost = damage_cost / max(next_saved_bits, 1)
+        heapq.heappush(
+            relax_heap,
+            (efficiency_cost, damage_cost, tie_breaker, layer_idx, row_idx, next_previous, next_saved_bits),
+        )
+        tie_breaker += 1
+
+    for layer_idx, layer in enumerate(normalized):
+        for row_idx, precision in enumerate(layer["allocation"]):
+            next_precision = _next_precision(precision)
+            if next_precision is None:
+                continue
+            current_bits = _precision_storage_bits_for_row(layer["in_features"], precision, blocksize)
+            next_bits = _precision_storage_bits_for_row(layer["in_features"], next_precision, blocksize)
+            delta_bits = next_bits - current_bits
+            benefit = max(0.0, layer["damage"][row_idx]) * (
+                PRECISION_ERROR_WEIGHT[precision] - PRECISION_ERROR_WEIGHT[next_precision]
+            )
+            efficiency = benefit / max(delta_bits, 1)
+            heapq.heappush(heap, (-efficiency, -benefit, tie_breaker, layer_idx, row_idx, next_precision, delta_bits))
+            tie_breaker += 1
+
+    while heap:
+        _, _, _, layer_idx, row_idx, next_precision, delta_bits = heapq.heappop(heap)
+        layer = normalized[layer_idx]
+        current_precision = layer["allocation"][row_idx]
+        if _next_precision(current_precision) != next_precision:
+            continue
+        if delta_bits > 0 and storage_bits + delta_bits > legacy_budget_bits:
+            continue
+
+        layer["allocation"][row_idx] = next_precision
+        precision_hist[current_precision] -= 1
+        precision_hist[next_precision] += 1
+        storage_bits += delta_bits
+
+        following = _next_precision(next_precision)
+        if following is None:
+            continue
+        current_bits = _precision_storage_bits_for_row(layer["in_features"], next_precision, blocksize)
+        following_bits = _precision_storage_bits_for_row(layer["in_features"], following, blocksize)
+        next_delta = following_bits - current_bits
+        benefit = max(0.0, layer["damage"][row_idx]) * (
+            PRECISION_ERROR_WEIGHT[next_precision] - PRECISION_ERROR_WEIGHT[following]
+        )
+        efficiency = benefit / max(next_delta, 1)
+        heapq.heappush(heap, (-efficiency, -benefit, tie_breaker, layer_idx, row_idx, following, next_delta))
+        tie_breaker += 1
+
+    allocations = {layer["name"]: layer["allocation"] for layer in normalized}
+    return {
+        "strategy": "global_error_budget_with_module_floors",
+        "target_bpw": target_bpw,
+        "mix": mix,
+        "mix_nominal_bpw": estimate_mix_bpw(mix),
+        "target_precision_floor": target_floor,
+        "allocations": allocations,
+        "storage_bits": storage_bits,
+        "budget_bits": legacy_budget_bits,
+        "legacy_budget_bits": legacy_budget_bits,
+        "estimated_bpw": storage_bits / max(total_weights, 1),
+        "legacy_estimated_bpw": legacy_budget_bits / max(total_weights, 1),
+        "precision_histogram": precision_hist,
+        "floor_relaxed_rows": floor_relaxed_rows,
+    }
 
 
 def storage_bits_for_layer(out_features: int, in_features: int, allocation: list[str], blocksize: int) -> int:
-    n_blocks = math.ceil(in_features / blocksize)
-    bits = out_features * 16
-    for name, width in BIT_WIDTHS.items():
-        rows = allocation.count(name)
-        if not rows:
-            continue
-        bits += rows * in_features * width
-        scale_blocks = n_blocks if width <= 4 else 1
-        bits += rows * scale_blocks * 16
-        if width <= 2:
-            bits += rows * n_blocks * 16
-    return bits
+    if len(allocation) != out_features:
+        raise ValueError("allocation length must match out_features")
+    return _allocation_storage_bits(in_features, allocation, blocksize)
 
 
 def collect_imatrix(model, tokenizer, text: str, max_tokens: int, block_size: int, max_batches: int) -> dict:
@@ -269,22 +522,52 @@ def apply_unified_dequantized(
 
     mix = precision_mix_for_target(target_bpw)
     started = time.perf_counter()
+    target_layers = []
     layers = []
-    precision_hist = {name: 0 for name in BIT_WIDTHS}
+
     with torch.no_grad():
         for name, module in model.named_modules():
             if not isinstance(module, torch.nn.Linear):
                 continue
             if not is_target_linear_name(name):
                 continue
-            if max_layers and len(layers) >= max_layers:
+            if max_layers and len(target_layers) >= max_layers:
                 break
 
             w = module.weight.detach().to(torch.float32).cpu()
             imp = imatrix.get(name)
             if imp is None:
                 imp = torch.ones(w.shape[1], dtype=torch.float32)
-            allocation = allocate_precision_by_damage(w, imp, mix)
+            target_layers.append(
+                {
+                    "name": name,
+                    "module": module,
+                    "out_features": w.shape[0],
+                    "in_features": w.shape[1],
+                    "row_damage": row_damage_scores(w, imp),
+                    "importance": imp,
+                }
+            )
+
+    plan_inputs = [
+        {
+            "name": layer["name"],
+            "out_features": layer["out_features"],
+            "in_features": layer["in_features"],
+            "row_damage": layer["row_damage"],
+        }
+        for layer in target_layers
+    ]
+    plan = build_global_precision_plan(plan_inputs, target_bpw=target_bpw, blocksize=blocksize)
+
+    precision_hist = {name: 0 for name in BIT_WIDTHS}
+    with torch.no_grad():
+        for layer in target_layers:
+            name = layer["name"]
+            module = layer["module"]
+            w = module.weight.detach().to(torch.float32).cpu()
+            imp = layer["importance"]
+            allocation = plan["allocations"][name]
             recon = _quantize_rows(w, imp, allocation, blocksize)
             module.weight.data.copy_(recon.to(device=module.weight.device, dtype=module.weight.dtype))
 
@@ -305,6 +588,7 @@ def apply_unified_dequantized(
                     "signal": signal,
                     "weighted_mse": wmse,
                     "storage_bits": layer_bits,
+                    "precision_floor": precision_floor_for_layer(name),
                     "precision_counts": {p: allocation.count(p) for p in BIT_WIDTHS},
                 }
             )
@@ -318,13 +602,20 @@ def apply_unified_dequantized(
     return {
         "method": "unified_fabq_vp_ebq_dequantized",
         "method_note": (
-            "Forward-only imatrix calibration selects variable row precision. "
-            "int2/binary rows receive block residual mean correction. Weights are "
-            "dequantized back to dense tensors for CPU validation."
+            "Forward-only imatrix calibration scores row damage. A global error-budget "
+            "allocator with module precision floors spends the legacy fixed-mix storage "
+            "budget across all target layers. int2/binary rows receive block residual "
+            "mean correction. Weights are dequantized back to dense tensors for CPU "
+            "validation."
         ),
         "target_bpw": target_bpw,
         "mix": mix,
         "mix_nominal_bpw": estimate_mix_bpw(mix),
+        "allocation_strategy": plan["strategy"],
+        "budget_bits": plan["budget_bits"],
+        "legacy_budget_bits": plan["legacy_budget_bits"],
+        "legacy_estimated_bpw": plan["legacy_estimated_bpw"],
+        "floor_relaxed_rows": plan["floor_relaxed_rows"],
         "blocksize": blocksize,
         "layers_quantized": len(layers),
         "target_weights": total_weights,
@@ -359,6 +650,12 @@ def main() -> int:
     ap.add_argument("--imatrix-batches", type=int, default=2)
     ap.add_argument("--quant-blocksize", type=int, default=128)
     ap.add_argument("--max-layers", type=int, default=0)
+    ap.add_argument("--run-quality", action="store_true")
+    ap.add_argument("--quality-tasks")
+    ap.add_argument("--max-quality-tasks", type=int, default=0)
+    ap.add_argument("--baseline-quality-json")
+    ap.add_argument("--max-accuracy-drop", type=float, default=0.05)
+    ap.add_argument("--min-quality-tasks", type=int, default=3)
     args = ap.parse_args()
 
     os.environ.setdefault("HF_HOME", args.hf_home)
@@ -403,6 +700,20 @@ def main() -> int:
     forward = run_forward_throughput(model, tokenizer, args.prompt, args.forward_repeats)
     generation = run_generation(model, tokenizer, args.prompt, args.max_new_tokens)
     validation["can_generate"] = generation["new_tokens"] > 0
+    quality = None
+    gate = None
+    quality_records = None
+    if args.run_quality:
+        quality_tasks = load_quality_tasks(args.quality_tasks, args.max_quality_tasks)
+        quality_records = [score_multiple_choice_task(model, tokenizer, task) for task in quality_tasks]
+        quality = aggregate_quality(quality_records)
+        baseline_quality = load_baseline_summary(args.baseline_quality_json)
+        gate = quality_gate(
+            quality,
+            baseline_quality,
+            max_accuracy_drop=args.max_accuracy_drop,
+            min_tasks=args.min_quality_tasks,
+        )
 
     result = {
         "repo_id": args.repo_id,
@@ -436,6 +747,10 @@ def main() -> int:
         "generation": generation,
         "elapsed_sec": time.perf_counter() - started,
     }
+    if args.run_quality:
+        result["quality"] = quality
+        result["quality_gate"] = gate
+        result["quality_tasks"] = quality_records
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -449,7 +764,12 @@ def main() -> int:
         "generation": {k: v for k, v in generation.items() if k != "output"},
         "rss_gb": result["rss_gb"],
     }
+    if args.run_quality:
+        printable["quality"] = quality
+        printable["quality_gate"] = gate
     print(json.dumps(printable, indent=2))
+    if args.run_quality:
+        print(format_quality_report(quality, gate, perplexity=ppl))
     print(f"Output preview: {ascii_preview(generation['output'])}")
     print(f"Wrote {out}")
     return 0

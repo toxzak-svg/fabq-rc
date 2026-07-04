@@ -1,213 +1,141 @@
 ---
 language:
 - en
-- zh
-- de
-- fr
 license: apache-2.0
-base_model: Qwen/Qwen3.6-27B
+base_model:
+- Qwen/Qwen3-0.6B
+- Qwen/Qwen3.5-0.8B
 tags:
 - quantization
-- 1-bit
-- gguf
-- llm
-- fabq-rc
-- fisher-adaptive
+- low-bit
+- post-training-quantization
+- research
+- negative-results
 - qwen
-library_name: llama.cpp
-inference:
-  warmup_required: true
-  device_type: gpu
-quark:
-  color: "#7C3AED"
-pipeline_tag: causal-lm
-extra_metadata:
-  quantization_label:
-    - Q1_K
-thumbnail: ""
+- fabq-rc
+pipeline_tag: other
+library_name: fabq-rc
 ---
 
-# Qwen3.6-27B-FABQ-RC-GGUF
+# FABQ-RC: Reproducible Research Prototype
 
-## Model Description
+FABQ-RC, Fisher-Adaptive Binary Quantization with Residual Codebooks, is an
+active research prototype for sub-byte LLM quantization. This Hugging Face card
+is intentionally conservative: it summarizes the checked-in evidence and known
+negative results rather than advertising a validated compressed model release.
 
-**FABQ-RC** (Fisher-Adaptive Binary Quantization with Residual Codebooks) is a 1-bit quantization method for large language models that adapts per layer rather than using a fixed blocksize. This quantization of Qwen3.6-27B achieves ~1.18 bits per parameter while maintaining quality through four key innovations.
+## Current Claim Boundary
 
-| Property | Value |
-|----------|-------|
-| **Base Model** | Qwen/Qwen3.6-27B |
-| **Quantization Method** | FABQ-RC |
-| **Format** | GGUF (v3) |
-| **Bits per Parameter** | ~1.18 bpw |
-| **Precision Allocation** | Top 5% channels → int4, 95% → binary ±1 |
-| **Blocksize** | Adaptive per-layer {64, 128, 256, 512} |
-| **Calibration Dataset** | C4 (2048 samples, seq_len=32) |
+The repository currently supports this claim:
 
-## How It Works
+> FABQ-RC-lite improves weight reconstruction over fixed binary block
+> quantizers, but the near-binary runtime path fails language-modeling quality.
+> A variable-precision prototype improves quality at roughly 4.5 bpw, making
+> calibrated variable precision a stronger near-term direction than a pure
+> 1-bit release.
 
-FABQ-RC combines four innovations:
+The repository does not currently support claims that FABQ-RC is a validated
+1-bit production model, has a validated BiLLM comparison win, or provides
+validated 27B GGUF quality.
 
-1. **Fisher-Weighted Channel Importance** — Uses Fisher Information (expected gradient²) to determine which channels actually matter for the loss. This is more directly relevant than Hessian (curvature) or magnitude alone.
+## Evidence Summary
 
-2. **Mixed-Precision Core Allocation** — Top 5% Fisher channels → int4 (preserve accuracy). Bottom 95% → binary ±1 (maximum compression).
+### Weight Reconstruction
 
-3. **Adaptive Blocksize** — Each layer gets its own optimal blocksize from {64, 128, 256, 512}, chosen by minimizing Fisher-weighted reconstruction error. Homogeneous layers use larger blocks; heterogeneous layers use smaller ones.
+Source: `results/qwen35_08b_weight_quant.md`
 
-4. **Residual Codebook** — After binary quantization, systematic residuals remain. FABQ-RC clusters these using 4 tiered k-means codebooks (64 centroids each, Fisher quartile-based), enabling non-linear correction that beats BiLLM's linear approximation.
+| Model | Method | MSE | SQNR dB | bpw | Interpretation |
+|---|---|---:|---:|---:|---|
+| Qwen/Qwen3.5-0.8B | Q1 block64 | 7.627237e-05 | 4.2685 | 1.2500 | Fixed binary baseline |
+| Qwen/Qwen3.5-0.8B | Q1 block128 | 7.701788e-05 | 4.2263 | 1.1250 | Fixed binary baseline |
+| Qwen/Qwen3.5-0.8B | FABQ-RC-lite | 6.615134e-05 | 4.8868 | 1.4010 | Better reconstruction, higher storage |
 
-```
-FP32 Weights
-    │
-    ▼
-Stage 1: Fisher-Weighted Channel Importance
-    │  Compute per-channel Fisher Information
-    │  Sort channels by expected loss impact
-    ▼
-Stage 2: Mixed-Precision Allocation
-    │  Top 5% channels → int4 (preserve accuracy)
-    │  Bottom 95% channels → binary ±1 (max compression)
-    ▼
-Stage 3: Adaptive Blocksize Selection
-    │  Per-layer sweep {64, 128, 256, 512}
-    │  Pick blocksize minimizing Fisher-weighted reconstruction error
-    ▼
-Stage 4: Residual Codebook Clustering
-    │  4 tiered codebooks × 64 centroids (Fisher quartile-based)
-    │  4-bit indices per block (16 centroids per layer cluster)
-    ▼
-FABQ-RC GGUF
-```
+This is not a perplexity, downstream task, or generation-quality result.
 
-## Why FABQ-RC > Other 1-bit Methods
+### Runtime Quality Smokes
 
-| Method | Blocksize | Residual Handling | Importance Metric |
-|--------|-----------|-------------------|-------------------|
-| Q1_0_g128 (Bonsai) | Fixed 128 | None | Magnitude |
-| BiLLM | Fixed | Linear approximation | Hessian |
-| **FABQ-RC** | **Adaptive** | **Non-linear codebook** | **Fisher** |
+Sources: `paper/FABQ_RC_preprint.md`,
+`results/fabq_runtime_validation_report.md`, and the June 26, 2026 unified
+benchmark JSONs.
 
-FABQ-RC beats BiLLM because:
-- **Adaptive blocksize** recovers more per-layer quality than fixed blocksize
-- **Fisher > Hessian** as importance metric (direct loss relevance vs. curvature approximation)
-- **Residual codebook** corrects systematic binary quantization bias better than linear approximation
+| Model | Variant | Dataset | Estimated bpw | PPL | Readout |
+|---|---|---|---:|---:|---|
+| Qwen/Qwen3-0.6B | Dense BF16 baseline | WikiText-2 slice | n/a | 35.2165 | Small-slice baseline |
+| Qwen/Qwen3-0.6B | FABQ-RC-lite dequantized | WikiText-2 slice | 1.4004 | 3,676,448.8825 | Negative result |
+| Qwen/Qwen3-0.6B | Unified VP/EBQ target 3.0 | WikiText-2 slice | 3.1151 | 3269.7708 | Quality failure |
+| Qwen/Qwen3-0.6B | Unified VP/EBQ target 4.0 | WikiText-2 slice | 4.1432 | 67.4850 | Improved but still degraded |
+| Qwen/Qwen3-0.6B | Unified VP/EBQ target 4.5 | WikiText-2 slice | 4.5255 | 42.5027 | Best current local smoke |
+| Qwen3.5-2B local checkpoint | Unified VP/EBQ target 3.0 | Inline fallback corpus | 3.1089 | 188.5031 | Functional smoke only |
 
-## Use with llama.cpp
+All runtime rows are dense-dequantized validation runs. They validate that the
+harness can load, quantize, dequantize, run forward passes, and generate short
+samples. They do not validate native compressed kernels, file-size savings in a
+published model artifact, or leaderboard-quality perplexity.
 
-### CLI Inference
+## Method Notes
 
-```bash
-# Download and run
-./llama-cli -m Qwen3.6-27B-FABQ-RC-Q1_K.gguf -n 256 -p "The future of 1-bit quantization is"
+FABQ-RC proposes:
 
-# Interactive mode
-./llama-cli -m Qwen3.6-27B-FABQ-RC-Q1_K.gguf -i -Ins 256
+1. Fisher-weighted channel or row importance.
+2. Mixed-precision allocation for high-importance rows.
+3. Adaptive quantization choices rather than one global format.
+4. Residual correction using codebook-style reconstruction.
 
-# With longer context
-./llama-cli -m Qwen3.6-27B-FABQ-RC-Q1_K.gguf -ctx 4096 -i -Ins 256
-```
+The checked-in runtime runs use simplified proxies: row energy for FABQ-RC-lite
+and forward-only imatrix calibration for the unified VP/EBQ prototype. The full
+Fisher calibration plus residual-codebook path remains future work.
 
-### Perplexity Evaluation
+## Not A Model-Artifact Inference Card
 
-```bash
-./llama-perplexity -m Qwen3.6-27B-FABQ-RC-Q1_K.gguf -f wikitext.txt
-```
+This card intentionally does not include llama.cpp or `from_pretrained`
+inference commands for a named FABQ-RC model file. The repository does not
+currently contain a validated HF or GGUF release artifact whose quality is
+supported by the checked-in benchmarks.
 
-### Python (llama-cpp-python)
+Before publishing a model artifact, add artifact-specific commands only after
+recording:
 
-```python
-from llama_cpp import Llama
+- exact model files and checksums,
+- physical bits-per-weight or file-size accounting,
+- matched dense and quantized quality metrics,
+- downstream quality/task checks,
+- native runtime memory and throughput measurements, if claimed.
 
-llm = Llama(
-    model_path="Qwen3.6-27B-FABQ-RC-Q1_K.gguf",
-    n_ctx=2048,
-    n_gpu_layers=-1,  # Auto-detect GPU offload
-    verbose=False,
-)
+## Reproducibility Files
 
-output = llm(
-    "The future of 1-bit quantization is",
-    max_tokens=256,
-    temperature=0.7,
-)
-print(output['choices'][0]['text'])
-```
-
-## Quantization Details
-
-### Precision Allocation
-
-- **int4 channels (5%):** Preserved for highest Fisher Information channels — these determine the layer's behavior
-- **Binary channels (95%):** Compressed to ±1 with per-block scaling
-
-### Adaptive Blocksize Distribution
-
-| Blocksize | Typical Layers |
-|-----------|----------------|
-| 64 | Attention projections, heterogeneous layers |
-| 128 | FFN layers, moderately heterogeneous |
-| 256 | Homogeneous FFN layers |
-| 512 | Embedding layers, highly homogeneous |
-
-### Residual Codebook Architecture
-
-- **4 tiered codebooks** of 64 centroids each (Fisher quartile-based assignment)
-- **4-bit indices** per block (16 active centroids per layer cluster)
-- Total codebook storage: 4 × 64 × 128 × 4 bytes = 128KB per blocksize (negligible)
-
-## Benchmark Comparison
-
-| Method | bpw | Perplexity (est.) | Notes |
-|--------|-----|-------------------|-------|
-| FP16 (baseline) | 16.0 | — | Qwen3.6-27B full precision |
-| Q1_0_g128 | 1.125 | degraded | Bonsai's format |
-| BiLLM | 1.08 | ~8.41 (70B) | Best prior work |
-| **FABQ-RC** | ~1.18 | TBD | Our method |
+| File | Purpose |
+|---|---|
+| `paper/FABQ_RC_preprint.md` | Conservative technical report and claim boundary |
+| `docs/validation/VALIDATION_MEMO.md` | Validation audit and unsupported-claim notes |
+| `results/qwen35_08b_weight_quant.md` | Weight reconstruction benchmark |
+| `results/fabq_runtime_validation_report.md` | Near-binary runtime negative result |
+| `results/runtime_validation_report.md` | Dense runtime baseline |
+| `results/qwen3_06b_unified_fabq_benchmark.json` | June 26 target 3.0 bpw unified result |
+| `results/qwen3_06b_unified_fabq_bpw4_benchmark.json` | June 26 target 4.0 bpw unified result |
+| `results/qwen3_06b_unified_fabq_bpw45_benchmark.json` | June 26 target 4.5 bpw unified result |
 
 ## Limitations
 
-- **Weight-only quantization:** Activations are not quantized
-- **Short calibration sequences:** 32 token context length may miss long-range dependencies
-- **Single-domain calibration:** C4 only; may not generalize perfectly to other domains
+- The PPL numbers are 254-token small-slice smoke measurements.
+- Qwen3.5-2B used an inline fallback corpus and is not comparable to the
+  WikiText-2 Qwen3-0.6B rows.
+- The full Fisher gradient calibration path is not validated in the runtime
+  results.
+- The full residual-codebook design is not validated in the runtime results.
+- Throughput numbers are for dense-dequantized CPU execution, not native
+  compressed inference.
 
-## Training Details
+## License
 
-| Property | Value |
-|----------|-------|
-| **Method** | FABQ-RC (see [FABQ-RC specification](https://github.com/toxzak/fabq-rc)) |
-| **Calibration** | C4 dataset, 2048 samples |
-| **Sequence Length** | 32 tokens |
-| **Hardware** | A100 80GB GPU |
-| **Export Format** | GGUF v3 |
-
-## Files
-
-| File | Description |
-|------|-------------|
-| `Qwen3.6-27B-FABQ-RC-Q1_K.gguf` | Main quantized model |
-| `*.pt` (in repo) | Intermediate checkpoint (FP16 reconstruction) |
+Apache 2.0.
 
 ## Citation
 
 ```bibtex
 @misc{fabqrc2026,
-    author = {Zach Maronek},
-    title = {FABQ-RC: Fisher-Adaptive Binary Quantization with Residual Codebooks},
-    year = {2026},
-    url = {https://github.com/toxzak/fabq-rc}
+  author = {Zach Maronek},
+  title = {FABQ-RC: Fisher-Adaptive Binary Quantization with Residual Codebooks},
+  year = {2026},
+  url = {https://github.com/toxzak/fabq-rc}
 }
 ```
-
-## Related Models
-
-- [toxzak/Qwen3.6-27B-FABQ-RC](https://huggingface.co/toxzak/Qwen3.6-27B-FABQ-RC) — safetensors format
-- [toxzak/Qwen3.6-35B-A3B-FABQ-RC](https://huggingface.co/toxzak/Qwen3.6-35B-A3B-FABQ-RC) — 3-bit variant
-
-## Acknowledgments
-
-- Qwen team for the excellent base model
-- llama.cpp team for the GGUF format and inference infrastructure
-- BiLLM and Bonsai authors for pioneering 1-bit quantization research
-
----
-
-*FABQ-RC by Zach Maronek · 2026*

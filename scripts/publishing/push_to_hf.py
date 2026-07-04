@@ -52,8 +52,8 @@ This folder contains earlier iterations of the FABQ-RC notebooks from April
 and May 2026. They're kept here for reference but are NOT the current
 working versions. The current working notebooks are:
 
-- `../notebooks/archive/Main-FABQ-RC-Notebook.ipynb` - the Qwen3.6-27B baseline
-- `../notebooks/archive/FABQ-RC-Dense-27B-Notebook.ipynb` - dense 27B experiments
+- `../notebooks/archive/Main-FABQ-RC-Notebook.ipynb` - archived Qwen baseline work
+- `../notebooks/archive/FABQ-RC-Dense-27B-Notebook.ipynb` - archived dense-model experiment notebook
 - `../notebooks/archive/FABQ-RC-DeepSeek-V4-Flash.ipynb` - DeepSeek V4-Flash (MoE)
 - `../notebooks/archive/FABQ-RC-GGUF-Export.ipynb` - GGUF export pipeline
 - `../notebooks/archive/FABQ-RC-Phase0-Validation.ipynb` - validation phase
@@ -61,6 +61,9 @@ working versions. The current working notebooks are:
 
 The Gemma 4 12B variant lives in `../gemma4-12b/` and is published
 separately at https://huggingface.co/toxzak/fabq-rc-gemma4-12b.
+
+These archived notebooks are historical context, not validated FABQ-RC release
+evidence.
 """
 
 
@@ -149,6 +152,18 @@ def stage_parent_repo(src: Path, dest: Path):
         legacy_dest.mkdir(parents=True, exist_ok=True)
         (legacy_dest / "README.md").write_text(LEGACY_README)
 
+    # Keep the HF-facing card in the repository root. Hugging Face renders
+    # README.md as the model/repo card, while the explicit model-card files are
+    # useful for downstream publishing workflows.
+    model_card_dir = src / "docs" / "model-cards"
+    parent_card = model_card_dir / "MODEL_CARD.md"
+    hf_card = model_card_dir / "MODEL_CARD_HF.md"
+    if parent_card.exists():
+        shutil.copy2(parent_card, dest / "MODEL_CARD.md")
+    if hf_card.exists():
+        shutil.copy2(hf_card, dest / "MODEL_CARD_HF.md")
+        shutil.copy2(hf_card, dest / "README.md")
+
     # Drop a .gitignore at the top
     (dest / ".gitignore").write_text("""__pycache__/
 *.pyc
@@ -164,20 +179,20 @@ def stage_parent_repo(src: Path, dest: Path):
     metadata = {
         "license": "apache-2.0",
         "base_model": [
-            "google/gemma-4-12B-it",
-            "Qwen/Qwen3.6-27B",
-            "deepseek-ai/DeepSeek-V4-Flash",
+            "Qwen/Qwen3-0.6B",
+            "Qwen/Qwen3.5-0.8B",
         ],
-        "tags": ["quantization", "1-bit", "fabq-rc", "fisher-adaptive",
-                 "research", "code"],
+        "tags": ["quantization", "low-bit", "post-training-quantization",
+                 "fabq-rc", "negative-results", "qwen", "research", "code"],
         "pipeline_tag": "other",
         "library_name": "fabq-rc",
         "project": "FABQ-RC",
         "description": (
-            "Parent FABQ-RC project: working notebooks (Qwen 27B, Gemma 4 12B, "
-            "DeepSeek V4-Flash), plans, specs, GGUF export scripts, finetune "
-            "helpers. The Gemma 4 12B variant lives in a separate repo at "
-            "toxzak/fabq-rc-gemma4-12b."
+            "Parent FABQ-RC project: research prototype and negative-result "
+            "evidence for Fisher-adaptive low-bit quantization. Checked-in "
+            "results validate weight reconstruction improvements and "
+            "dense-dequantized quality smokes, but not a production 1-bit "
+            "model or a validated 27B GGUF artifact."
         ),
         "related_repos": [
             "toxzak/fabq-rc-gemma4-12b",
@@ -191,9 +206,11 @@ def stage_parent_repo(src: Path, dest: Path):
   license: apache-2.0
   tags:
     - quantization
-    - 1-bit
+    - low-bit
+    - post-training-quantization
     - fabq-rc
-    - fisher-adaptive
+    - negative-results
+    - qwen
     - research
     - code
   pipeline_tag: other
