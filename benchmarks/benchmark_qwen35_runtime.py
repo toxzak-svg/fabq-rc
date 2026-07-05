@@ -155,6 +155,70 @@ def _load_eval_text_from_local_cache(
     return None
 
 
+def _downloaded_dataset_files(dataset_name: str, dataset_config: str, split: str) -> list[Path]:
+    try:
+        from huggingface_hub import hf_hub_download
+    except Exception as exc:
+        print(f"[warn] huggingface_hub unavailable for dataset shard download: {type(exc).__name__}: {exc}")
+        return []
+
+    cache_roots = [root / "hub" for root in _hf_cache_roots()]
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
+    candidates = [
+        f"{dataset_config}/{split}-00000-of-00001.parquet",
+        f"{dataset_config}/{split}-00000-of-00001.jsonl",
+        f"{dataset_config}/{split}-00000-of-00001.json",
+    ]
+    downloaded: list[Path] = []
+    for filename in candidates:
+        for cache_root in cache_roots:
+            try:
+                path = hf_hub_download(
+                    repo_id=dataset_name,
+                    repo_type="dataset",
+                    filename=filename,
+                    cache_dir=str(cache_root),
+                    token=token,
+                )
+                downloaded.append(Path(path))
+                break
+            except Exception:
+                continue
+        if downloaded:
+            break
+    return downloaded
+
+
+def _load_eval_text_from_hub_shard(
+    max_chars: int,
+    dataset_name: str,
+    dataset_config: str,
+    split: str,
+) -> tuple[str, str] | None:
+    pieces: list[str] = []
+    total = 0
+    for path in _downloaded_dataset_files(dataset_name, dataset_config, split):
+        try:
+            if path.suffix == ".parquet":
+                texts = _texts_from_parquet(path)
+            else:
+                texts = _texts_from_json_lines(path)
+            for raw_text in texts:
+                text = raw_text.strip()
+                if not text:
+                    continue
+                pieces.append(text)
+                total += len(text) + 2
+                if total >= max_chars:
+                    return "\n\n".join(pieces)[:max_chars], f"{dataset_name}/{dataset_config}/{split}"
+        except Exception as exc:
+            print(f"[warn] downloaded dataset shard failed, skipping {path}: {type(exc).__name__}: {exc}")
+            continue
+    if pieces:
+        return "\n\n".join(pieces)[:max_chars], f"{dataset_name}/{dataset_config}/{split}"
+    return None
+
+
 def load_eval_text(max_chars: int, dataset_name: str, dataset_config: str, split: str) -> tuple[str, str]:
     try:
         from datasets import load_dataset
@@ -178,6 +242,10 @@ def load_eval_text(max_chars: int, dataset_name: str, dataset_config: str, split
     cached = _load_eval_text_from_local_cache(max_chars, dataset_name, dataset_config, split)
     if cached is not None:
         return cached
+
+    downloaded = _load_eval_text_from_hub_shard(max_chars, dataset_name, dataset_config, split)
+    if downloaded is not None:
+        return downloaded
 
     print("[warn] local dataset cache unavailable, using inline corpus")
 

@@ -21,7 +21,7 @@ Zach Maronek
 
 Post-training quantization can reduce the storage and memory cost of large language models (LLMs), but the extreme 1- to 2-bit regime remains brittle. This report introduces FABQ-RC, a Fisher-adaptive binary quantization design that combines channel-wise importance estimation, mixed precision row allocation, per-layer blocksize selection, and residual codebook correction. The central hypothesis is that binary quantization is viable only when the quantizer allocates extra representation capacity to loss-sensitive rows and corrects systematic residual structure after binarization.
 
-We report the current reproducible state of the project rather than a final leaderboard claim. A weight-level benchmark on Qwen3.5-0.8B shows that a simplified FABQ-RC-lite variant improves reconstruction error over fixed binary block quantizers: mean squared error is reduced by 13.3% relative to Q1 block64 and 14.1% relative to Q1 block128, at 1.401 bits per weight. However, dense-dequantized runtime validation shows that the simplified 1.40 bpw variant fails language modeling quality, increasing WikiText-2 slice perplexity from 35.22 to 3.68M on Qwen3-0.6B and from 26.60 to 677k on Qwen3.5-0.8B. A variable-precision prototype using forward activation importance and residual mean correction substantially improves the tradeoff: on Qwen3-0.6B, estimated 4.53 bpw yields 42.50 perplexity on the same 256-token WikiText-2 slice versus 35.22 for the dense baseline, while estimated 3.12 bpw remains inadequate at 3269.77 perplexity.
+We report the current reproducible state of the project rather than a final leaderboard claim. A weight-level benchmark on Qwen3.5-0.8B shows that a simplified FABQ-RC-lite variant improves reconstruction error over fixed binary block quantizers: mean squared error is reduced by 13.3% relative to Q1 block64 and 14.1% relative to Q1 block128, at 1.401 bits per weight. However, dense-dequantized runtime validation shows that the simplified 1.40 bpw variant fails language modeling quality, increasing WikiText-2 slice perplexity from 35.22 to 3.68M on Qwen3-0.6B and from 26.60 to 677k on Qwen3.5-0.8B. A variable-precision prototype using forward activation importance and residual mean correction substantially improves the tradeoff: on Qwen3-0.6B, estimated 4.53 bpw yields 42.50 perplexity on the same 256-token WikiText-2 slice versus 35.22 for the dense baseline, while estimated 3.12 bpw remains inadequate at 3269.77 perplexity. A comparable Qwen3.5-2B target-3.0-bpw run on the same WikiText-2 slice reaches 529.40 perplexity, confirming larger-checkpoint execution but not acceptable quality.
 
 These results support two conclusions. First, naive binary/int4 mixing is not sufficient; residual correction and less aggressive variable precision are necessary. Second, the previously advertised 1.18 to 1.21 bpw target is not yet supported by the measured storage accounting in this repository. FABQ-RC should therefore be read as an active research prototype with promising reconstruction behavior and a clear validation roadmap, not as a completed 1-bit replacement for production LLM inference.
 
@@ -139,7 +139,7 @@ Most local runs used:
 - 256 evaluation tokens, two 128-token chunks
 - deterministic generation with 24 new tokens
 
-An earlier Qwen3.5-2B unified run was produced in a separate environment with Python 3.12.13, PyTorch 2.11.0+cu128, CUDA available, and an inline fallback corpus because the dataset load failed in offline mode. The harness now checks the local Hugging Face cache before accepting that inline fallback, but the checked-in 2B result has not yet been rerun on the WikiText-2 slice. Its perplexity is therefore excluded from the comparable results below.
+The Qwen3.5-2B unified run reported below was produced in a separate Colab environment with Python 3.12.13, PyTorch 2.11.0+cu128, CUDA available, and an NVIDIA L4 runtime. Its benchmark path uses the same `wikitext/wikitext-2-raw-v1/test` slice and 256-token perplexity window as the smaller-model rows. An older checked-in 2B smoke artifact used an inline fallback corpus and is retained only as a superseded functional smoke result.
 
 All runtime experiments dequantize weights back into dense tensors before forward evaluation. They validate quantization quality and functional execution, but they do not measure native compressed-kernel speedups.
 
@@ -192,9 +192,13 @@ The simplified binary/int4 variant is mechanically valid: models load, quantized
 
 The variable-precision prototype strongly outperforms FABQ-RC-lite at comparable evaluation settings. At estimated 4.5255 bpw, the small-slice perplexity gap to dense is 7.2863 absolute points, or approximately 20.7% relative to the dense baseline. At estimated 4.1432 bpw, the gap is still substantial. At estimated 3.1151 bpw, quality remains poor.
 
-### 5.5 Omitted Qwen3.5-2B Smoke Result
+### 5.5 Unified Prototype on Qwen3.5-2B
 
-The checked-in Qwen3.5-2B unified result (`results/qwen3_5_2b_unified_fabq_benchmark.json`) is a functional smoke result, not a comparable language-modeling result. It used the `inline_fallback` corpus rather than `wikitext/wikitext-2-raw-v1/test`, so its perplexity row is intentionally omitted from the paper table until rerun on the same WikiText-2 slice used for the smaller models. The smoke still shows that the prototype loaded, quantized 284 target layers, completed forward and generation checks, and reported estimated 3.1089 bpw with 9.3759 dB SQNR.
+| Model | Target bpw | Estimated bpw | Dataset | MSE | SQNR dB | PPL | Prompt tok/s | Decode tok/s |
+|---|---:|---:|---|---:|---:|---:|---:|---:|
+| Qwen/Qwen3.5-2B | 3.0 | 3.1089 | WikiText-2 slice | 1.286813e-05 | 10.8515 | 529.4014 | 10.21 | 5.88 |
+
+This row replaces the earlier inline-fallback 2B smoke result. It is now comparable at the dataset/slice level, but it is still a negative quality result: at the aggressive 3.0 target bpw setting, the model loads, quantizes 284 target layers, runs forward and generation, and produces a much lower perplexity than the old inline-fallback number would have implied, but the absolute perplexity remains far from usable. No dense Qwen3.5-2B baseline is reported in this draft, so this row should not be read as a baseline-relative quality gap.
 
 ### 5.6 Storage Budget Audit
 
@@ -226,7 +230,7 @@ The current experiments have several major limitations.
 3. Perplexity uses very small 256-token slices and should be treated as smoke validation.
 4. Throughput results are for dense-dequantized CPU execution and do not demonstrate compressed-kernel acceleration.
 5. The final 27B GGUF claim is not validated by checked-in perplexity logs.
-6. The checked-in Qwen3.5-2B run used an inline fallback corpus and is intentionally omitted from the comparable WikiText-2 result rows.
+6. The Qwen3.5-2B row is comparable by dataset slice, but lacks a same-model dense baseline row in this draft.
 7. Existing GGUF specifications in the repository need consolidation before external compatibility claims.
 
 ## 8. Reproducibility Artifacts
@@ -245,7 +249,8 @@ Relevant repository files:
 | `results/fabq_runtime_validation_report.md` | Simplified FABQ runtime report |
 | `results/runtime_validation_report.md` | Dense baseline runtime report |
 | `results/qwen3_06b_unified_fabq*_benchmark.json` | Unified Qwen3-0.6B result files |
-| `results/qwen3_5_2b_unified_fabq_benchmark.json` | Unified Qwen3.5-2B functional smoke result; omitted from comparable PPL tables until rerun on WikiText-2 |
+| `results/qwen3_5_2b_unified_fabq_wikitext.json` | Unified Qwen3.5-2B comparable WikiText-2 result |
+| `results/qwen3_5_2b_unified_fabq_benchmark.json` | Superseded Qwen3.5-2B inline-fallback functional smoke result |
 
 ## 9. Future Work
 

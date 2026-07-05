@@ -57,3 +57,34 @@ def test_load_eval_text_uses_local_hf_cache_before_inline_fallback(tmp_path, mon
     assert "WikiText cached first article." in text
     assert "WikiText cached second article." in text
     assert "Language models compress patterns" not in text
+
+
+def test_load_eval_text_downloads_hub_shard_before_inline_fallback(tmp_path, monkeypatch):
+    shard = tmp_path / "downloaded-test.jsonl"
+    shard.write_text(
+        '{"text": "Downloaded WikiText article."}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "empty-hf-home"))
+    monkeypatch.delenv("HF_DATASETS_CACHE", raising=False)
+    monkeypatch.setitem(
+        sys.modules,
+        "datasets",
+        SimpleNamespace(load_dataset=lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("offline"))),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(
+            hf_hub_download=lambda **kwargs: str(shard)
+            if kwargs["filename"] == "wikitext-2-raw-v1/test-00000-of-00001.jsonl"
+            else (_ for _ in ()).throw(FileNotFoundError(kwargs["filename"]))
+        ),
+    )
+
+    text, dataset_id = load_eval_text(200, "wikitext", "wikitext-2-raw-v1", "test")
+
+    assert dataset_id == "wikitext/wikitext-2-raw-v1/test"
+    assert text == "Downloaded WikiText article."
+    assert "Language models compress patterns" not in text
